@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
+import { loggerMiddleware } from './middleware/logger.js';
 import userRoutes from './routes/userRoutes.js';
 import submissionRoutes from './routes/submissionRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
@@ -21,6 +22,7 @@ if (!process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD) {
   process.exit(1);
 }
 
+app.use(loggerMiddleware);
 app.use(helmet());
 app.use(cors());
 app.use(express.json());

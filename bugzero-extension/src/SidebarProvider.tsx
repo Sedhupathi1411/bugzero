@@ -195,7 +195,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "run": {
-          const { fileName, input, expectedOutput } = data.value;
+          const { fileName, input, expectedOutput, problemId, testCaseIndex } = data.value;
           const workspaceFolders = vscode.workspace.workspaceFolders;
           if (!workspaceFolders) return;
 
@@ -230,6 +230,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 success: false,
                 actualOutput: "",
                 expectedOutput,
+                problemId,
+                testCaseIndex,
                 stderr: `Compilation Error:\n${err.stderr || err.message}`,
               });
               return;
@@ -252,6 +254,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               success: false,
               actualOutput: "",
               expectedOutput,
+              problemId,
+              testCaseIndex,
               stderr: "Time Limit Exceeded (5s)",
             });
           }, 5000);
@@ -276,6 +280,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               success,
               actualOutput,
               expectedOutput,
+              problemId,
+              testCaseIndex,
               stderr:
                 stderr ||
                 (code !== 0 ? `Process exited with code ${code}` : ""),
@@ -296,7 +302,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
           break;
         }
         case "submit": {
-          const { fileName, auth } = data.value;
+          const { fileName, auth, status } = data.value;
           const workspaceFolders = vscode.workspace.workspaceFolders;
           if (!workspaceFolders) {
             return;
@@ -319,6 +325,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
               body: JSON.stringify({
                 problemId: fileName.split(".")[0],
                 solution: content,
+                status: status || "FAILED",
               }),
             });
 

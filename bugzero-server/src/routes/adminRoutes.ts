@@ -35,19 +35,58 @@ const adminAuth = (req: Request, res: Response, next: NextFunction) => {
 
 router.get("/dashboard", adminAuth, async (req, res: Response) => {
   try {
+    const EASY_POINTS = 5;
+    const MEDIUM_POINTS = 10;
+    const HARD_POINTS = 15;
+
     const problems = await getAllProblems();
+    const problemDifficultyMap: Record<string, string> = {};
+    problems.forEach(p => {
+      problemDifficultyMap[p.id] = p.level.toLowerCase();
+    });
+
     const users = await prisma.user.findMany({
       include: {
         submissions: {
           select: {
-            problemId: true
-          }
+            problemId: true,
+            status: true
+          },
+          orderBy: { createdAt: "desc" }
         }
-      },
-      orderBy: { username: "asc" }
+      }
     });
 
     const totalSubmissions = await prisma.submission.count();
+
+    // Calculate points and prepare user data
+    const userMatrixData = users.map(user => {
+      const statusMap: Record<string, string> = {};
+      user.submissions.forEach(s => {
+        if (statusMap[s.problemId] !== 'PASSED') {
+          statusMap[s.problemId] = s.status;
+        }
+      });
+
+      let totalPoints = 0;
+      Object.keys(statusMap).forEach(probId => {
+        if (statusMap[probId] === 'PASSED') {
+          const difficulty = problemDifficultyMap[probId];
+          if (difficulty === 'easy') totalPoints += EASY_POINTS;
+          else if (difficulty === 'medium') totalPoints += MEDIUM_POINTS;
+          else if (difficulty === 'hard') totalPoints += HARD_POINTS;
+        }
+      });
+
+      return {
+        username: user.username,
+        statusMap,
+        totalPoints
+      };
+    });
+
+    // Sort by points descending
+    userMatrixData.sort((a, b) => b.totalPoints - a.totalPoints || a.username.localeCompare(b.username));
 
     const html = `
       <!DOCTYPE html>
@@ -69,10 +108,15 @@ router.get("/dashboard", adminAuth, async (req, res: Response) => {
               table { width: 100%; border-collapse: collapse; min-width: 800px; }
               th, td { padding: 10px 12px; text-align: center; border-bottom: 1px solid #eee; border-right: 1px solid #eee; }
               th { background: #2c3e50; color: #fff; text-transform: uppercase; font-size: 0.75em; position: sticky; top: 0; }
-              th:first-child, td:first-child { position: sticky; left: 0; background: #fff; z-index: 2; text-align: left; font-weight: bold; border-right: 2px solid #ddd; }
+              
+              th:first-child, td:first-child { position: sticky; left: 0; background: #fff; z-index: 2; text-align: left; font-weight: bold; border-right: 1px solid #eee; }
               th:first-child { background: #2c3e50; z-index: 3; }
               
-              .check { color: #27ae60; font-weight: bold; font-size: 1.2em; }
+              .points-col { background: #f8f9fa !important; font-weight: bold; color: #2c3e50; min-width: 80px; }
+              th.points-col { background: #34495e !important; color: #fff; }
+              
+              .status-passed { color: #27ae60; font-weight: bold; font-size: 1.2em; }
+              .status-failed { color: #e74c3c; font-weight: bold; font-size: 1.2em; }
               .empty { color: #ddd; }
               tr:hover td { background: #f9f9f9; }
               tr:hover td:first-child { background: #f0f4f8; }
@@ -97,28 +141,29 @@ router.get("/dashboard", adminAuth, async (req, res: Response) => {
               </div>
           </div>
 
-          <h2>User Progress Matrix</h2>
+          <h2>User Progress Leaderboard</h2>
           <div class="table-container">
               <table>
                   <thead>
                       <tr>
                           <th>User</th>
-                          ${problems.map(p => `<th>${p.id.replace(/_/g, ' ')}</th>`).join('')}
+                          <th class="points-col">Points</th>
+                          ${problems.map(p => `<th>${p.id.replace(/_/g, ' ')}<br><span style="font-size: 0.8em; opacity: 0.7;">(${p.level})</span></th>`).join('')}
                       </tr>
                   </thead>
                   <tbody>
-                      ${users.map(user => {
-                        const userSubmissions = new Set(user.submissions.map(s => s.problemId));
-                        return `
+                      ${userMatrixData.map(userData => `
                           <tr>
-                              <td>${user.username}</td>
+                              <td>${userData.username}</td>
+                              <td class="points-col">${userData.totalPoints}</td>
                               ${problems.map(p => {
-                                const submitted = userSubmissions.has(p.id);
-                                return `<td>${submitted ? '<span class="check">✓</span>' : '<span class="empty">-</span>'}</td>`;
+                                const status = userData.statusMap[p.id];
+                                if (!status) return '<td><span class="empty">-</span></td>';
+                                if (status === 'PASSED') return '<td><span class="status-passed">✓</span></td>';
+                                return '<td><span class="status-failed">✗</span></td>';
                               }).join('')}
                           </tr>
-                        `;
-                      }).join('')}
+                      `).join('')}
                   </tbody>
               </table>
           </div>

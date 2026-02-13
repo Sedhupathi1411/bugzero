@@ -21,14 +21,20 @@ const Home = () => {
     const [password, setPassword] = useState('');
     const [auth, setAuth] = useState('');
     const [error, setError] = useState('');
-    const [submittedFiles, setSubmittedFiles] = useState<Set<string>>(new Set());
+    const [submittedFiles, setSubmittedFiles] = useState<Record<string, string>>({});
     const [problemsData, setProblemsData] = useState<Problem[]>([]);
     const [activeFile, setActiveFile] = useState<string | null>(null);
     const [runResults, setRunResults] = useState<Record<string, any>>({});
     const [isLoggingIn, setIsLoggingIn] = useState(false);
+    const [submittingProblem, setSubmittingProblem] = useState<string | null>(null);
 
     // @ts-ignore
     const vscode = React.useMemo(() => acquireVsCodeApi(), []);
+
+    useEffect(() => {
+        // Check for persisted login state on mount only
+        vscode.postMessage({ command: 'checkLogin' });
+    }, [vscode]);
 
     useEffect(() => {
         const handler = (event: MessageEvent) => {
@@ -44,9 +50,12 @@ const Home = () => {
                         setAuth(message.auth);
                         setUsername(message.username);
                         if (message.user && message.user.submissions) {
-                            const submitted = new Set<string>(
-                                message.user.submissions.map((s: any) => s.problemId)
-                            );
+                            const submitted: Record<string, string> = {};
+                            message.user.submissions.forEach((s: any) => {
+                                if (submitted[s.problemId] !== 'PASSED') {
+                                    submitted[s.problemId] = s.status;
+                                }
+                            });
                             setSubmittedFiles(submitted);
                         }
                         if (message.problems) {
@@ -62,23 +71,48 @@ const Home = () => {
                     setAuth('');
                     setUsername('');
                     setPassword('');
-                    setSubmittedFiles(new Set());
+                    setSubmittedFiles({});
                     setProblemsData([]);
                     break;
                 case 'submissionResponse':
                     if (message.success) {
-                        const problemId = message.fileName.split('.')[0];
-                        setSubmittedFiles(prev => new Set([...prev, problemId]));
+                        setSubmittingProblem(null);
                     }
                     break;
                 case 'activeFile':
                     setActiveFile(message.fileName);
                     break;
                 case 'runResult':
-                    setRunResults(prev => ({
-                        ...prev,
-                        [message.expectedOutput]: message // Using expectedOutput as key is a bit hacky but works for simple cases
-                    }));
+                    const resultKey = `${message.problemId}-${message.testCaseIndex}`;
+                    setRunResults(prev => {
+                        const next = { ...prev, [resultKey]: message };
+                        
+                        // Check if we were waiting for this run to finish a submission
+                        if (submittingProblem === message.problemId) {
+                            const problem = problemsData.find(p => p.id === message.problemId);
+                            if (problem) {
+                                const allResults = problem.testcases.map((tc, idx) => {
+                                    if (idx === message.testCaseIndex) return message;
+                                    return next[`${problem.id}-${idx}`];
+                                });
+                                
+                                const allFinished = allResults.every(r => r && !r.loading);
+                                if (allFinished) {
+                                    const allPassed = allResults.every(r => r && r.success);
+                                    const status = allPassed ? 'PASSED' : 'FAILED';
+                                    const fileName = `${problem.id}.${problem.lang}`;
+                                    
+                                    vscode.postMessage({ 
+                                        command: 'submit', 
+                                        value: { fileName, auth, status } 
+                                    });
+                                    
+                                    setSubmittedFiles(prevSub => ({ ...prevSub, [problem.id]: status }));
+                                }
+                            }
+                        }
+                        return next;
+                    });
                     break;
                 case 'pullSuccess':
                     if (message.problems) {
@@ -89,12 +123,8 @@ const Home = () => {
         };
 
         window.addEventListener('message', handler);
-        
-        // Check for persisted login state on mount
-        vscode.postMessage({ command: 'checkLogin' });
-
         return () => window.removeEventListener('message', handler);
-    }, [vscode]);
+    }, [vscode, submittingProblem, problemsData, auth]);
 
     const handleLogin = () => {
         if (!username || !password) {
@@ -112,26 +142,32 @@ const Home = () => {
     };
 
     const handleSubmit = (fileName: string) => {
-        console.log("Submitting file in webview:", fileName);
-        vscode.postMessage({ command: 'submit', value: { fileName, auth } });
+        const problemId = fileName.split('.')[0];
+        const problem = problemsData.find(p => p.id === problemId);
+        if (!problem) return;
+
+        console.log(`Starting submission for ${problemId}...`);
+        setSubmittingProblem(problemId);
+        handleRunAll(problem);
     };
 
     const handleOpenFile = (fileName: string) => {
         vscode.postMessage({ command: 'openFile', value: { fileName } });
     };
 
-    const handleRun = (fileName: string, input: string, output: string) => {
-        setRunResults(prev => ({ ...prev, [output]: { loading: true } }));
+    const handleRun = (fileName: string, input: string, output: string, problemId: string, testCaseIndex: number) => {
+        const resultKey = `${problemId}-${testCaseIndex}`;
+        setRunResults(prev => ({ ...prev, [resultKey]: { loading: true } }));
         vscode.postMessage({ 
             command: 'run', 
-            value: { fileName, input, expectedOutput: output } 
+            value: { fileName, input, expectedOutput: output, problemId, testCaseIndex } 
         });
     };
 
     const handleRunAll = (problem: Problem) => {
         const fileName = `${problem.id}.${problem.lang}`;
-        problem.testcases.forEach(tc => {
-            handleRun(fileName, tc.input, tc.output);
+        problem.testcases.forEach((tc, idx) => {
+            handleRun(fileName, tc.input, tc.output, problem.id, idx);
         });
     };
 
@@ -212,9 +248,10 @@ const Home = () => {
                             const isPython = file.name.endsWith('.py');
                             const problemId = file.name.split('.')[0];
                             const displayName = `${index + 1}. ${formatName(problemId)}`;
-                            const isSubmitted = submittedFiles.has(problemId);
+                            const status = submittedFiles[problemId];
                             const isActive = activeFile === file.name;
                             const problemInfo = problemsData.find(p => p.id === problemId);
+                            const isSubmitting = submittingProblem === problemId;
                             
                             return (
                                 <tr key={file.name} style={{ borderBottom: '1px solid var(--vscode-panel-border)', background: isActive ? 'var(--vscode-list-activeSelectionBackground)' : 'transparent' }}>
@@ -235,7 +272,8 @@ const Home = () => {
                                     </td>
                                     <td style={{ padding: '5px' }}>
                                         <ActionButton 
-                                            isSubmitted={isSubmitted} 
+                                            status={status} 
+                                            isSubmitting={isSubmitting}
                                             onClick={() => handleSubmit(file.name)} 
                                         />
                                     </td>
@@ -289,13 +327,14 @@ const Home = () => {
                         </div>
                         <div style={{ padding: '10px' }}>
                             {activeProblem.testcases.map((tc, index) => {
-                                const result = runResults[tc.output];
+                                const resultKey = `${activeProblem.id}-${index}`;
+                                const result = runResults[resultKey];
                                 return (
                                     <div key={index} style={{ marginBottom: '15px', padding: '10px', background: 'var(--vscode-editor-background)', border: '1px solid var(--vscode-panel-border)', borderRadius: '4px' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                                             <strong style={{ fontSize: '0.9em', opacity: 0.9 }}>Case {index + 1}</strong>
                                             <button 
-                                                onClick={() => handleRun(`${activeProblem.id}.${activeProblem.lang}`, tc.input, tc.output)}
+                                                onClick={() => handleRun(`${activeProblem.id}.${activeProblem.lang}`, tc.input, tc.output, activeProblem.id, index)}
                                                 disabled={result?.loading}
                                                 style={{ 
                                                     background: 'var(--vscode-button-secondaryBackground)',
@@ -385,10 +424,18 @@ const LevelChip = ({ level }: { level: string }) => {
     );
 };
 
-const ActionButton = ({ isSubmitted, onClick }: { isSubmitted: boolean, onClick: () => void }) => {
+const ActionButton = ({ status, isSubmitting, onClick }: { status?: string, isSubmitting?: boolean, onClick: () => void }) => {
     const [isHovered, setIsHovered] = useState(false);
 
-    if (isSubmitted && !isHovered) {
+    if (isSubmitting) {
+        return (
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '2px 8px', fontSize: '0.85em', opacity: 0.7 }}>
+                ...
+            </div>
+        );
+    }
+
+    if (status && !isHovered) {
         return (
             <div 
                 onMouseEnter={() => setIsHovered(true)}
@@ -397,11 +444,12 @@ const ActionButton = ({ isSubmitted, onClick }: { isSubmitted: boolean, onClick:
                     justifyContent: 'center', 
                     alignItems: 'center',
                     padding: '2px 8px',
-                    color: 'var(--vscode-testing-iconPassed)',
-                    fontSize: '1.2em'
+                    color: status === 'PASSED' ? 'var(--vscode-testing-iconPassed)' : 'var(--vscode-errorForeground)',
+                    fontSize: '1.2em',
+                    fontWeight: 'bold'
                 }}
             >
-                ✓
+                {status === 'PASSED' ? '✓' : '✗'}
             </div>
         );
     }
@@ -416,10 +464,11 @@ const ActionButton = ({ isSubmitted, onClick }: { isSubmitted: boolean, onClick:
                 border: 'none',
                 padding: '2px 8px',
                 cursor: 'pointer',
-                width: '100%'
+                width: '100%',
+                fontSize: '0.85em'
             }}
         >
-            Submit
+            {status ? 'Retry' : 'Submit'}
         </button>
     );
 };

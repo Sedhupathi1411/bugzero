@@ -17,7 +17,8 @@ router.post("/register", authMiddleware, async (req, res: Response) => {
       include: {
         submissions: {
           select: {
-            problemId: true
+            problemId: true,
+            status: true
           }
         }
       }
