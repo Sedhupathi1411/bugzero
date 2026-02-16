@@ -4,6 +4,7 @@
   "description": "",
   "version": "0.0.1",
   "publisher": "bugzero",
+  "license": "SEE LICENSE IN ../LICENSE",
   "engines": {
     "vscode": "^1.109.0"
   },
